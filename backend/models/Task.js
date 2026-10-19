@@ -3,6 +3,11 @@ import mongoose from 'mongoose';
 
 const taskSchema = new mongoose.Schema(
   {
+    taskNumber: {
+      type: Number,
+      unique: true,
+      index: true,
+    },
     title: String,
 
     description: String,

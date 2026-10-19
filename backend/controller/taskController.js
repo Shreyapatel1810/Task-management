@@ -122,8 +122,22 @@ export const createTask = async (req, res) => {
       });
     }
 
+    
+const lastTask = await Task.findOne({
+  taskNumber: { $type: 'number' },
+})
+  .sort({ taskNumber: -1 })
+  .select('taskNumber')
+  .lean();
+
+const nextTaskNumber = lastTask
+  ? lastTask.taskNumber + 1
+  : 1;
+
+
     // Create task with one assignee
     const task = await Task.create({
+      taskNumber: nextTaskNumber,
       title: title.trim(),
       description: description || '',
       priority: priority || 'Medium',
@@ -776,17 +790,89 @@ const updateStatus = async (req, res) => {
       });
     }
 
+    
+    // Save the updated status first
     await task.save();
 
+    // Get task creator and assignee details
     const updatedTask = await Task.findById(id)
       .populate('createdBy', 'name email')
       .populate('assignedTo', 'name email')
       .populate('statuses.user', 'name email');
 
+    // Send status-change emails
+    try {
+      const creator = updatedTask.createdBy;
+      const assignee = updatedTask.assignedTo;
+
+      const recipients = [
+        creator?.email,
+        assignee?.email,
+      ].filter(Boolean);
+
+      // Avoid sending twice if both users are the same
+      const uniqueRecipients = [...new Set(recipients)];
+
+      const changedBy = String(userId) === creator?._id.toString()
+        ? creator.name
+        : assignee?.name || 'User';
+
+      const html = `
+        <div style="font-family: Arial, sans-serif; padding: 20px;">
+          <h2>Task Status Updated</h2>
+
+          <p>Hello,</p>
+
+          <p>The status of a task has changed.</p>
+
+          <div style="background: #f3f4f6; padding: 15px; border-radius: 8px;">
+            <p>
+              <strong>Task:</strong>
+              ${updatedTask.title}
+            </p>
+
+            <p>
+              <strong>Previous Status:</strong>
+              ${currentStatus}
+            </p>
+
+            <p>
+              <strong>New Status:</strong>
+              ${status}
+            </p>
+
+            <p>
+              <strong>Changed By:</strong>
+              ${changedBy}
+            </p>
+          </div>
+
+          <p>Please log in to your Task Management application
+          to view the task.</p>
+        </div>
+      `;
+
+      for (const email of uniqueRecipients) {
+        await sendEmail(
+          email,
+          `Task Status Changed - ${updatedTask.title}`,
+          html
+        );
+      }
+
+      console.log('Status-change emails sent successfully');
+    } catch (emailError) {
+      console.error(
+        'Failed to send status-change email:',
+        emailError.message
+      );
+    }
+
     return res.status(200).json({
       message: 'Task status updated successfully',
       task: updatedTask,
     });
+
   } catch (error) {
     console.error('Update status error:', error);
 

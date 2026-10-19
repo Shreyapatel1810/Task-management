@@ -81,6 +81,7 @@ export default function Tasks() {
         console.log(
           'Fetched tasks:',
           fetchedTasks.map((task) => ({
+            taskNumber: task.taskNumber,
             title: task.title,
             dueDate: task.dueDate,
             status: task.overallStatus,
@@ -219,6 +220,7 @@ export default function Tasks() {
         <table className="table">
           <thead>
             <tr>
+              <th>Task Number</th>
               <th>Title</th>
               <th>Relation</th>
               <th>Status</th>
@@ -231,7 +233,7 @@ export default function Tasks() {
           <tbody>
             {loading && (
               <tr>
-                <td colSpan="6" className="muted">
+                <td colSpan="7" className="muted">
                   Loading…
                 </td>
               </tr>
@@ -269,9 +271,17 @@ export default function Tasks() {
                     className={task.isOverdue ? 'is-overdue' : ''}
                   >
                     <td>
-                      <Link to={`/tasks/${task._id}`}>
-                        {task.title}
-                      </Link>
+                      <span className="task-number">
+                        <Link to={`/tasks/${task._id}`}>
+                          TASK-{String(task.taskNumber ?? '').padStart(3, '0')}
+                        </Link>
+                      </span>
+                    </td>
+
+                    <td>
+
+                      {task.title}
+
                     </td>
 
                     <td>

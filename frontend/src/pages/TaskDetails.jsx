@@ -252,7 +252,7 @@ export default function TaskDetails() {
 
           {isCreator && canModifyTask && (
             <Link
-  
+
               to={`/tasks/${task._id || id}/edit`}
               className="btn btn--primary"
             >
@@ -277,6 +277,7 @@ export default function TaskDetails() {
       <div className="details">
         {/* Main task information */}
         <section className="card">
+          <p>Task Number: TASK-{String(task.taskNumber).padStart(3, '0')}</p>
           <h3>{task.title || 'Untitled Task'}</h3>
 
           <p className="muted">Description</p>
@@ -300,14 +301,14 @@ export default function TaskDetails() {
             <dd>
               <span
                 className={`badge ${currentStatus === 'In Progress'
-                    ? 'badge--status-in-progress'
-                    : currentStatus === 'On Hold'
-                      ? 'badge--status-on-hold'
-                      : currentStatus === 'In Review'
-                        ? 'badge--status-in-review'
-                        : currentStatus === 'Completed'
-                          ? 'badge--status-completed'
-                          : ''
+                  ? 'badge--status-in-progress'
+                  : currentStatus === 'On Hold'
+                    ? 'badge--status-on-hold'
+                    : currentStatus === 'In Review'
+                      ? 'badge--status-in-review'
+                      : currentStatus === 'Completed'
+                        ? 'badge--status-completed'
+                        : ''
                   }`}
               >
                 {currentStatus}
@@ -405,16 +406,16 @@ export default function TaskDetails() {
                 )}
               </div>
 
-               {isReadOnly && (
-                  <div className="alert">
-                    This task is completed and is now read-only.
-                    No further changes are allowed.
-                  </div>
-                )}
+              {isReadOnly && (
+                <div className="alert">
+                  This task is completed and is now read-only.
+                  No further changes are allowed.
+                </div>
+              )}
             </>
           )}
 
-         
+
 
           {/* Assignee status dropdown */}
           {isAssignee && (
