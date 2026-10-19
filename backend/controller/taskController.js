@@ -1,9 +1,9 @@
-
 import mongoose from 'mongoose';
 import Task from '../models/Task.js';
 import User from '../models/user.js';
 import fs from 'fs/promises';
 import path from 'path';
+import { sendEmail } from '../utils/mailSend.js';
 
 const STATUSES = [
   'Open',
@@ -21,9 +21,23 @@ const POPULATE = [
   { path: 'statuses.user', select: 'name email' },
 ];
 
+// Escape special characters before using a string in a regex.
+const escapeRegex = (value) =>
+  value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+// Escape user-provided text before placing it in HTML.
+const escapeHtml = (value) =>
+  String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 
-// CREATE TASK
+// ======================================================
+// CREATE TASK + SEND EMAIL
+// ======================================================
+
 export const createTask = async (req, res) => {
   try {
     const {
@@ -44,9 +58,24 @@ export const createTask = async (req, res) => {
     }
 
     // Validate title
-    if (!title || !title.trim()) {
+    if (typeof title !== 'string' || !title.trim()) {
       return res.status(400).json({
         message: 'Title is required',
+      });
+    }
+
+    // Check for duplicate title
+    const existingTask = await Task.findOne({
+      title: {
+        $regex: `^${escapeRegex(title.trim())}$`,
+        $options: 'i',
+      },
+      isDeleted: false,
+    });
+
+    if (existingTask) {
+      return res.status(400).json({
+        message: 'A task with this title already exists',
       });
     }
 
@@ -64,7 +93,7 @@ export const createTask = async (req, res) => {
       });
     }
 
-    // Assign to the selected user, or to yourself by default
+    // Assign to the selected user, or yourself by default
     const assigneeId = assignedTo || String(userId);
 
     if (!mongoose.isValidObjectId(assigneeId)) {
@@ -73,14 +102,23 @@ export const createTask = async (req, res) => {
       });
     }
 
-    // Check that the assigned user exists
-    const userExists = await User.exists({
-      _id: assigneeId,
-    });
+    // Find the assigned user
+    const assignee = await User.findById(assigneeId)
+      .select('name email');
 
-    if (!userExists) {
+    if (!assignee) {
       return res.status(400).json({
         message: 'Assigned user not found',
+      });
+    }
+
+    // Find the task creator
+    const creator = await User.findById(userId)
+      .select('name email');
+
+    if (!creator) {
+      return res.status(404).json({
+        message: 'Task creator not found',
       });
     }
 
@@ -110,22 +148,100 @@ export const createTask = async (req, res) => {
 
     await task.populate(POPULATE);
 
+    // Send email to the assigned user
+    let emailSent = false;
+
+    try {
+      const isSelfAssigned =
+        String(assignee._id) === String(userId);
+
+      if (!assignee.email) {
+        console.log(
+          'Email not sent: assigned user has no email address'
+        );
+      } else if (isSelfAssigned) {
+        // No need to notify someone about their own task.
+      } else {
+        const html = `
+          <div style="font-family: Arial, sans-serif; padding: 20px;">
+            <h2>New Task Assigned</h2>
+
+            <p>Hello ${escapeHtml(assignee.name || 'User')},</p>
+
+            <p>A new task has been assigned to you.</p>
+
+            <div style="padding: 15px; background: #f3f4f6; border-radius: 8px;">
+              <p>
+                <strong>Task Title:</strong>
+                ${escapeHtml(task.title)}
+              </p>
+
+              <p>
+                <strong>Description:</strong>
+                ${escapeHtml(task.description || 'No description')}
+              </p>
+
+              <p>
+                <strong>Priority:</strong>
+                ${escapeHtml(task.priority)}
+              </p>
+
+              <p>
+                <strong>Due Date:</strong>
+                ${escapeHtml(
+                  new Date(task.dueDate).toLocaleDateString('en-IN')
+                )}
+              </p>
+
+              <p>
+                <strong>Created By:</strong>
+                ${escapeHtml(creator.name || 'User')}
+              </p>
+            </div>
+
+            <p>
+              Please log in to your Task Management application
+              to view your task.
+            </p>
+          </div>
+        `;
+
+        await sendEmail(
+          assignee.email,
+          'New Task Assigned - Task Management',
+          html
+        );
+
+        emailSent = true;
+
+        console.log('Task email sent to:', assignee.email);
+      }
+    } catch (emailError) {
+      // Email failure should not undo task creation.
+      console.error(
+        'Failed to send task email:',
+        emailError.message
+      );
+    }
+
     return res.status(201).json({
       message: 'Task created successfully',
       task,
+      emailSent,
     });
   } catch (error) {
-    console.error(error);
+    console.error('Create task error:', error);
 
     return res.status(500).json({
       message: 'Failed to create task',
+      error: error.message,
     });
   }
 };
 
-
-// GET ALL MY TASKS
-
+// ======================================================
+// GET ALL TASKS
+// ======================================================
 
 export const getTasks = async (req, res) => {
   try {
@@ -142,14 +258,13 @@ export const getTasks = async (req, res) => {
 
     const userId = req.user?._id || req.user?.id;
 
-    // 1. Check login
     if (!userId) {
       return res.status(401).json({
         message: 'Please login first',
       });
     }
 
-    // 2. Validate view
+    // Validate view
     const validViews = ['all', 'created', 'assigned'];
 
     if (!validViews.includes(view)) {
@@ -158,7 +273,7 @@ export const getTasks = async (req, res) => {
       });
     }
 
-    // 3. Validate status
+    // Validate status
     if (
       status &&
       status !== 'all' &&
@@ -169,7 +284,7 @@ export const getTasks = async (req, res) => {
       });
     }
 
-    // 4. Validate priority
+    // Validate priority
     if (
       priority &&
       priority !== 'all' &&
@@ -180,17 +295,16 @@ export const getTasks = async (req, res) => {
       });
     }
 
-    // 5. Validate assignee ID
+    // Validate assignee ID
     if (
       assignee &&
-      !mongoose.Types.ObjectId.isValid(assignee)
+      !mongoose.isValidObjectId(assignee)
     ) {
       return res.status(400).json({
         message: 'Invalid assignee ID',
       });
     }
 
-    // 6. Build the MongoDB query
     const query = {
       isDeleted: false,
     };
@@ -207,7 +321,6 @@ export const getTasks = async (req, res) => {
         assignedTo: userId,
       });
     } else {
-      // Show tasks created by or assigned to the logged-in user
       conditions.push({
         $or: [
           { createdBy: userId },
@@ -216,36 +329,29 @@ export const getTasks = async (req, res) => {
       });
     }
 
-    // 7. Search by task title
-    if (search.trim()) {
-      const escapedSearch = search.trim().replace(
-        /[.*+?^${}()|[\]\\]/g,
-        '\\$&'
-      );
-
+    // Search by title
+    if (typeof search === 'string' && search.trim()) {
       conditions.push({
         title: {
-          $regex: escapedSearch,
+          $regex: escapeRegex(search.trim()),
           $options: 'i',
         },
       });
     }
 
-    // 8. Filter by priority
+    // Filter by priority
     if (priority && priority !== 'all') {
-      conditions.push({
-        priority,
-      });
+      conditions.push({ priority });
     }
 
-    // 9. Filter by assignee
+    // Filter by assignee
     if (assignee) {
       conditions.push({
         assignedTo: new mongoose.Types.ObjectId(assignee),
       });
     }
 
-    // 10. Filter by due date
+    // Validate and filter due dates
     const dueDateFilter = {};
 
     const parseDateOnly = (value) => {
@@ -291,7 +397,7 @@ export const getTasks = async (req, res) => {
         });
       }
 
-      // Exclusive next-day boundary includes the entire selected day
+      // Include the entire selected end date.
       endDate.setDate(endDate.getDate() + 1);
       dueDateFilter.$lt = endDate;
     }
@@ -312,17 +418,13 @@ export const getTasks = async (req, res) => {
       });
     }
 
-    // Apply all non-status filters together
-    if (conditions.length > 0) {
-      query.$and = conditions;
-    }
+    query.$and = conditions;
 
-    // 11. Fetch tasks and populate user information
     const tasks = await Task.find(query)
       .populate(POPULATE)
       .sort({ dueDate: 1 });
 
-    // 12. Find the status belonging to each task's assignee
+    // Get the assigned user's status.
     const getAssigneeStatus = (task) => {
       const assignedUserId = String(
         task.assignedTo?._id ||
@@ -339,8 +441,7 @@ export const getTasks = async (req, res) => {
       return statusRecord?.status || task.overallStatus || 'Open';
     };
 
-    // 13. Filter by assignee status
-    // The creator and assignee both see the same status.
+    // Filter by status
     let filteredTasks = tasks;
 
     if (status && status !== 'all') {
@@ -349,13 +450,12 @@ export const getTasks = async (req, res) => {
       );
     }
 
-    // 14. Calculate overdue status
+    // Tasks due today are not overdue.
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
     let result = filteredTasks.map((task) => {
       const taskObject = task.toObject();
-
       const assigneeStatus = getAssigneeStatus(task);
 
       const dueDate = task.dueDate
@@ -372,7 +472,7 @@ export const getTasks = async (req, res) => {
       return taskObject;
     });
 
-    // 15. Filter overdue tasks only
+    // Filter overdue tasks
     const overdueOnly =
       overdue === true || overdue === 'true';
 
@@ -380,7 +480,6 @@ export const getTasks = async (req, res) => {
       result = result.filter((task) => task.isOverdue);
     }
 
-    // 16. Return the final task list
     return res.status(200).json({
       message: 'Tasks fetched successfully',
       tasks: result,
@@ -395,16 +494,25 @@ export const getTasks = async (req, res) => {
   }
 };
 
-
-
+// ======================================================
 // GET SINGLE TASK
+// ======================================================
+
 export const getTask = async (req, res) => {
   try {
     const userId = req.user?._id || req.user?.id;
     const { id } = req.body;
 
+    if (!userId) {
+      return res.status(401).json({
+        message: 'Please log in',
+      });
+    }
+
     if (!mongoose.isValidObjectId(id)) {
-      return res.status(400).json({ message: 'Invalid task ID' });
+      return res.status(400).json({
+        message: 'Invalid task ID',
+      });
     }
 
     const task = await Task.findOne({
@@ -417,35 +525,43 @@ export const getTask = async (req, res) => {
     }).populate(POPULATE);
 
     if (!task) {
-      return res.status(404).json({ message: 'Task not found' });
+      return res.status(404).json({
+        message: 'Task not found',
+      });
     }
 
     return res.status(200).json({ task });
   } catch (error) {
-    console.error(error);
+    console.error('Get task error:', error);
+
     return res.status(500).json({
       message: 'Failed to get task',
     });
   }
 };
 
+// ======================================================
 // UPDATE TASK
+// ======================================================
+
 export const updateTask = async (req, res) => {
   try {
     const userId = req.user?._id || req.user?.id;
-    const { id } = req.body;
+    const { id, title, description, priority, dueDate } = req.body;
 
-    const {
-      title,
-      description,
-      priority,
-      dueDate,
-    } = req.body;
-
-    if (!mongoose.isValidObjectId(id)) {
-      return res.status(400).json({ message: 'Invalid task ID' });
+    if (!userId) {
+      return res.status(401).json({
+        message: 'Please log in',
+      });
     }
 
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({
+        message: 'Invalid task ID',
+      });
+    }
+
+    // Only the creator can edit.
     const task = await Task.findOne({
       _id: id,
       createdBy: userId,
@@ -458,11 +574,26 @@ export const updateTask = async (req, res) => {
       });
     }
 
-    // Validation
+    // Validate title and check duplicates.
     if (title !== undefined) {
       if (typeof title !== 'string' || !title.trim()) {
         return res.status(400).json({
           message: 'Title cannot be empty',
+        });
+      }
+
+      const existingTask = await Task.findOne({
+        _id: { $ne: task._id },
+        title: {
+          $regex: `^${escapeRegex(title.trim())}$`,
+          $options: 'i',
+        },
+        isDeleted: false,
+      });
+
+      if (existingTask) {
+        return res.status(400).json({
+          message: 'A task with this title already exists',
         });
       }
 
@@ -510,23 +641,31 @@ export const updateTask = async (req, res) => {
       task,
     });
   } catch (error) {
-    console.error(error);
+    console.error('Update task error:', error);
+
     return res.status(500).json({
       message: 'Failed to update task',
     });
   }
 };
 
-// UPDATE MY STATUS
+// ======================================================
+// UPDATE TASK STATUS
+// ======================================================
 
 const updateStatus = async (req, res) => {
   try {
     const { id, status } = req.body;
 
-    // 1. Validate request
     if (!id || !status) {
       return res.status(400).json({
         message: 'Task ID and status are required',
+      });
+    }
+
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({
+        message: 'Invalid task ID',
       });
     }
 
@@ -536,7 +675,6 @@ const updateStatus = async (req, res) => {
       });
     }
 
-    // 2. Get logged-in user ID
     const userId = String(
       req.user?.id ||
       req.user?._id ||
@@ -550,16 +688,14 @@ const updateStatus = async (req, res) => {
       });
     }
 
-    // 3. Find task
     const task = await Task.findById(id);
 
-    if (!task) {
+    if (!task || task.isDeleted) {
       return res.status(404).json({
         message: 'Task not found',
       });
     }
 
-    // 4. Identify creator and assignee
     const creatorId = String(
       task.createdBy?._id ||
       task.createdBy ||
@@ -575,14 +711,13 @@ const updateStatus = async (req, res) => {
     const isCreator = userId === creatorId;
     const isAssignee = userId === assigneeId;
 
-    // Only the creator or assignee can update the task status
     if (!isCreator && !isAssignee) {
       return res.status(403).json({
         message: 'You cannot update this task',
       });
     }
 
-    // 5. Get the current status of the single assignee
+    // Find the single assignee's status.
     const statusRecord = (task.statuses || []).find(
       (item) =>
         String(item.user?._id || item.user || '') ===
@@ -591,70 +726,42 @@ const updateStatus = async (req, res) => {
 
     const currentStatus = statusRecord?.status || 'Open';
 
-    // 6. Completed tasks are permanently read-only
+    // Completed tasks cannot be changed.
     if (currentStatus === 'Completed') {
       return res.status(403).json({
         message: 'Completed tasks cannot be changed',
       });
     }
 
-    // 7. Creator permissions
-    if (isCreator) {
-      // Creator can set On Hold only from In Progress
-      if (status === 'On Hold' && currentStatus !== 'In Progress') {
-        return res.status(400).json({
-          message: 'You can set On Hold only when the task is In Progress',
-        });
-      }
+    // Build the set of statuses this user may move the task to.
+    // A self-assigned task (creator === assignee) gets both sets,
+    // so it can go Open -> In Progress -> In Review -> Completed.
+    const allowed = new Set();
 
-      // Creator can reopen only from On Hold
-      // The frontend sends "In Progress" for the Reopen action
-      if (status === 'In Progress' && currentStatus !== 'On Hold') {
-        return res.status(400).json({
-          message: 'You can reopen the task only when it is On Hold',
-        });
-      }
-
-      // Creator can complete only from In Review
-      if (status === 'Completed' && currentStatus !== 'In Review') {
-        return res.status(400).json({
-          message: 'You can complete the task only when it is In Review',
-        });
-      }
-
-      // Creator cannot set other statuses
-      if (!['On Hold', 'In Progress', 'Completed'].includes(status)) {
-        return res.status(403).json({
-          message: 'Creator can only set On Hold, reopen, or Completed',
-        });
-      }
+    if (isAssignee && currentStatus !== 'On Hold') {
+      ['Open', 'In Progress', 'In Review'].forEach((s) =>
+        allowed.add(s)
+      );
     }
 
-    // 8. Assignee permissions
-    if (isAssignee) {
-      // Assignee cannot change status while task is On Hold
-      if (currentStatus === 'On Hold') {
+    if (isCreator) {
+      if (currentStatus === 'In Progress') allowed.add('On Hold');
+      if (currentStatus === 'On Hold') allowed.add('In Progress');
+      if (currentStatus === 'In Review') allowed.add('Completed');
+    }
+
+    if (!allowed.has(status)) {
+      if (isAssignee && !isCreator && currentStatus === 'On Hold') {
         return res.status(403).json({
           message: 'Task is On Hold. Wait for the creator to reopen it.',
         });
       }
 
-      // Assignee cannot set On Hold or Completed
-      if (['On Hold', 'Completed'].includes(status)) {
-        return res.status(403).json({
-          message: 'Assignee cannot set On Hold or Completed',
-        });
-      }
-
-      // Assignee can only set Open, In Progress, or In Review
-      if (!['Open', 'In Progress', 'In Review'].includes(status)) {
-        return res.status(403).json({
-          message: 'Assignee can only set Open, In Progress, or In Review',
-        });
-      }
+      return res.status(403).json({
+        message: `You cannot change this task from ${currentStatus} to ${status}`,
+      });
     }
 
-    // 9. Update the status record
     const completedAt =
       status === 'Completed' ? new Date() : null;
 
@@ -669,10 +776,8 @@ const updateStatus = async (req, res) => {
       });
     }
 
-    // 10. Save changes
     await task.save();
 
-    // 11. Fetch updated task
     const updatedTask = await Task.findById(id)
       .populate('createdBy', 'name email')
       .populate('assignedTo', 'name email')
@@ -694,32 +799,27 @@ const updateStatus = async (req, res) => {
 
 export { updateStatus };
 
-
-
-
-
+// ======================================================
 // DELETE TASK (SOFT DELETE)
+// ======================================================
 
 export const deleteTask = async (req, res) => {
   try {
     const userId = req.user?._id || req.user?.id;
     const { id } = req.body;
 
-    // 1. Check login
     if (!userId) {
       return res.status(401).json({
         message: 'Please log in',
       });
     }
 
-    // 2. Validate task ID
     if (!id || !mongoose.isValidObjectId(id)) {
       return res.status(400).json({
         message: 'Invalid task ID',
       });
     }
 
-    // 3. Find the task
     const task = await Task.findById(id);
 
     if (!task || task.isDeleted) {
@@ -728,16 +828,16 @@ export const deleteTask = async (req, res) => {
       });
     }
 
-    // 4. Only the task creator can delete it
-    const creatorId = String(task.createdBy?._id || task.createdBy);
-    
+    const creatorId = String(
+      task.createdBy?._id || task.createdBy
+    );
+
     if (creatorId !== String(userId)) {
       return res.status(403).json({
         message: 'Only the task creator can delete this task',
       });
     }
 
-    // 5. Soft delete
     task.isDeleted = true;
     task.deletedAt = new Date();
     task.deletedBy = userId;
@@ -757,8 +857,9 @@ export const deleteTask = async (req, res) => {
   }
 };
 
-
-
+// ======================================================
+// GET DASHBOARD STATISTICS
+// ======================================================
 
 export const getStats = async (req, res) => {
   try {
@@ -770,64 +871,63 @@ export const getStats = async (req, res) => {
       });
     }
 
-    // Start of today: tasks due today are NOT overdue.
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const [created, assigned, inProgress, completed, overdue] =
-      await Promise.all([
-        // Total tasks created by the logged-in user
-        Task.countDocuments({
-          createdBy: userId,
-          isDeleted: false,
-        }),
+    const [
+      created,
+      assigned,
+      inProgress,
+      completed,
+      overdue,
+    ] = await Promise.all([
+      Task.countDocuments({
+        createdBy: userId,
+        isDeleted: false,
+      }),
 
-        // Total tasks assigned to the logged-in user
-        Task.countDocuments({
-          assignedTo: userId,
-          isDeleted: false,
-        }),
+      Task.countDocuments({
+        assignedTo: userId,
+        isDeleted: false,
+      }),
 
-        // Tasks currently In Progress
-        Task.countDocuments({
-          assignedTo: userId,
-          isDeleted: false,
-          statuses: {
-            $elemMatch: {
-              user: userId,
-              status: 'In Progress',
-            },
+      Task.countDocuments({
+        assignedTo: userId,
+        isDeleted: false,
+        statuses: {
+          $elemMatch: {
+            user: userId,
+            status: 'In Progress',
           },
-        }),
+        },
+      }),
 
-        // Tasks completed by the logged-in user
-        Task.countDocuments({
-          assignedTo: userId,
-          isDeleted: false,
-          statuses: {
-            $elemMatch: {
-              user: userId,
-              status: 'Completed',
-            },
+      Task.countDocuments({
+        assignedTo: userId,
+        isDeleted: false,
+        statuses: {
+          $elemMatch: {
+            user: userId,
+            status: 'Completed',
           },
-        }),
+        },
+      }),
 
-        // Overdue tasks: due before today and not completed
-        Task.countDocuments({
-          assignedTo: userId,
-          isDeleted: false,
-          dueDate: {
-            $lt: today,
-            $ne: null,
+      Task.countDocuments({
+        assignedTo: userId,
+        isDeleted: false,
+        dueDate: {
+          $lt: today,
+          $ne: null,
+        },
+        statuses: {
+          $elemMatch: {
+            user: userId,
+            status: { $ne: 'Completed' },
           },
-          statuses: {
-            $elemMatch: {
-              user: userId,
-              status: { $ne: 'Completed' },
-            },
-          },
-        }),
-      ]);
+        },
+      }),
+    ]);
 
     return res.status(200).json({
       stats: {
@@ -847,35 +947,33 @@ export const getStats = async (req, res) => {
   }
 };
 
-
+// ======================================================
+// REASSIGN TASK
+// ======================================================
 
 export const assignTask = async (req, res) => {
   try {
     const userId = req.user?._id || req.user?.id;
     const { id, assignedTo } = req.body;
 
-    // 1. Check login
     if (!userId) {
       return res.status(401).json({
         message: 'Please log in',
       });
     }
 
-    // 2. Validate task ID
     if (!id || !mongoose.isValidObjectId(id)) {
       return res.status(400).json({
         message: 'Invalid task ID',
       });
     }
 
-    // 3. Validate assignee ID
     if (!assignedTo || !mongoose.isValidObjectId(assignedTo)) {
       return res.status(400).json({
         message: 'Please select a valid assignee',
       });
     }
 
-    // 4. Find task
     const task = await Task.findById(id);
 
     if (!task || task.isDeleted) {
@@ -884,8 +982,9 @@ export const assignTask = async (req, res) => {
       });
     }
 
-    // 5. Only the creator can reassign the task
-    const creatorId = String(task.createdBy?._id || task.createdBy);
+    const creatorId = String(
+      task.createdBy?._id || task.createdBy
+    );
 
     if (creatorId !== String(userId)) {
       return res.status(403).json({
@@ -893,7 +992,26 @@ export const assignTask = async (req, res) => {
       });
     }
 
-    // 6. Check that the selected user exists
+    // Reassign only while the task is Open.
+    const currentAssigneeId = String(
+      task.assignedTo?._id || task.assignedTo || ''
+    );
+
+    const currentStatusRecord = (task.statuses || []).find(
+      (item) =>
+        String(item.user?._id || item.user || '') ===
+        currentAssigneeId
+    );
+
+    const currentStatus =
+      currentStatusRecord?.status || task.overallStatus || 'Open';
+
+    if (currentStatus !== 'Open') {
+      return res.status(400).json({
+        message: 'You can reassign the task only when it is Open',
+      });
+    }
+
     const assigneeUser = await User.findById(assignedTo);
 
     if (!assigneeUser) {
@@ -902,37 +1020,20 @@ export const assignTask = async (req, res) => {
       });
     }
 
-    // 7. Assign a single user
-    // Assign to exactly one user and reset their status
-task.assignedTo = assigneeUser._id;
-
-task.statuses = [
-  {
-    user: assigneeUser._id,
-    status: 'Open',
-    completedAt: null,
-  },
-];
-
-await task.save();
-
-    // Add a default status for the new assignee if they have none
-    const existingStatus = (task.statuses || []).find(
-      (item) =>
-        String(item.user?._id || item.user) === String(assignedTo)
-    );
-
-    if (!existingStatus) {
-      task.statuses.push({
+    // Assign exactly one user and reset their status.
+    task.assignedTo = assigneeUser._id;
+    task.statuses = [
+      {
         user: assigneeUser._id,
         status: 'Open',
-      });
-    }
+        completedAt: null,
+      },
+    ];
 
     await task.save();
 
-    // Return populated task details
-    const updatedTask = await Task.findById(task._id).populate(POPULATE);
+    const updatedTask = await Task.findById(task._id)
+      .populate(POPULATE);
 
     return res.status(200).json({
       message: 'Task assigned successfully',
@@ -948,7 +1049,9 @@ await task.save();
   }
 };
 
-
+// ======================================================
+// DOWNLOAD TASK ATTACHMENT
+// ======================================================
 
 export const getTaskAttachment = async (req, res) => {
   try {
@@ -978,10 +1081,14 @@ export const getTaskAttachment = async (req, res) => {
       });
     }
 
-    const creatorId = String(task.createdBy?._id || task.createdBy);
-    const assigneeId = String(task.assignedTo?._id || task.assignedTo);
+    const creatorId = String(
+      task.createdBy?._id || task.createdBy
+    );
 
-    // Allow only the creator or assigned user.
+    const assigneeId = String(
+      task.assignedTo?._id || task.assignedTo
+    );
+
     if (
       String(userId) !== creatorId &&
       String(userId) !== assigneeId
@@ -1000,12 +1107,9 @@ export const getTaskAttachment = async (req, res) => {
     }
 
     const uploadRoot = path.resolve(process.cwd(), 'uploads');
-
-    // Use the filename stored in MongoDB, not the whole attachment object.
     const filename = path.basename(attachment.filename);
     const filePath = path.resolve(uploadRoot, filename);
 
-    // Prevent access outside the uploads folder.
     if (!filePath.startsWith(uploadRoot + path.sep)) {
       return res.status(400).json({
         message: 'Invalid attachment path',
@@ -1028,12 +1132,14 @@ export const getTaskAttachment = async (req, res) => {
     console.error('Get task attachment error:', error);
 
     return res.status(500).json({
-      message: 'Failed to download attachment',
+      message: 'Failed to download task attachment',
     });
   }
 };
 
-
+// ======================================================
+// REMOVE TASK ATTACHMENT
+// ======================================================
 
 export const removeTaskAttachment = async (req, res) => {
   try {
@@ -1041,11 +1147,15 @@ export const removeTaskAttachment = async (req, res) => {
     const { id } = req.body;
 
     if (!userId) {
-      return res.status(401).json({ message: 'Please log in' });
+      return res.status(401).json({
+        message: 'Please log in',
+      });
     }
 
     if (!id || !mongoose.isValidObjectId(id)) {
-      return res.status(400).json({ message: 'Invalid task ID' });
+      return res.status(400).json({
+        message: 'Invalid task ID',
+      });
     }
 
     const task = await Task.findOne({
@@ -1054,10 +1164,14 @@ export const removeTaskAttachment = async (req, res) => {
     });
 
     if (!task) {
-      return res.status(404).json({ message: 'Task not found' });
+      return res.status(404).json({
+        message: 'Task not found',
+      });
     }
 
-    const creatorId = String(task.createdBy?._id || task.createdBy);
+    const creatorId = String(
+      task.createdBy?._id || task.createdBy
+    );
 
     if (String(userId) !== creatorId) {
       return res.status(403).json({
@@ -1081,19 +1195,21 @@ export const removeTaskAttachment = async (req, res) => {
       });
     }
 
-    // Remove the stored file. Ignore it if it is already missing.
+    // Update the database first, then remove the file, so a failed
+    // save never leaves a record pointing at a missing file.
+    task.attachment = undefined;
+    task.markModified('attachment');
+
+    await task.save();
+
+    // Ignore the file if it is already missing.
     try {
       await fs.unlink(filePath);
     } catch (error) {
       if (error.code !== 'ENOENT') {
-        throw error;
+        console.error('Attachment file cleanup failed:', error);
       }
     }
-
-    // Remove the attachment reference from the task.
-    task.attachment = undefined;
-    task.markModified('attachment');
-    await task.save();
 
     return res.status(200).json({
       message: 'Attachment removed successfully',

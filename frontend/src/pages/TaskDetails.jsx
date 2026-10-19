@@ -404,8 +404,17 @@ export default function TaskDetails() {
                   </p>
                 )}
               </div>
+
+               {isReadOnly && (
+                  <div className="alert">
+                    This task is completed and is now read-only.
+                    No further changes are allowed.
+                  </div>
+                )}
             </>
           )}
+
+         
 
           {/* Assignee status dropdown */}
           {isAssignee && (

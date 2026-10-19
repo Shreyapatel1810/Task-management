@@ -179,8 +179,8 @@ form.card { max-width: 700px; }
   justify-content: center;
   align-items: center;
   width: 100%;
-  margin: 0 auto 12px;
-  text-align: center;
+  margin: 0 auto 12px 185px;
+  text-align: left;
 
   > div {
     width: 100%;
@@ -189,7 +189,7 @@ form.card { max-width: 700px; }
   &__eyebrow {
     display: block;
     margin: 0 0 6px;
-    text-align: center;
+    text-align: left;
     color: $primary;
     font-size: 11px;
     font-weight: 700;
@@ -209,7 +209,7 @@ form.card { max-width: 700px; }
     color: $text-muted;
     font-size: 13px;
     line-height: 1.4;
-    text-align: center;
+    text-align: left;
   }
 }
 
