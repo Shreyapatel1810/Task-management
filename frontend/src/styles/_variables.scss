@@ -1,0 +1,21 @@
+$primary: #4f46e5;
+$primary-dark: #4338ca;
+$primary-soft: #eef2ff;
+$danger: #dc2626;
+$danger-soft: #fef2f2;
+$success: #15803d;
+$success-soft: #f0fdf4;
+
+$text: #111827;
+$text-muted: #6b7280;
+$border: #d1d5db;
+$bg: #f9fafb;
+$white: #ffffff;
+
+$radius: 10px;
+$shadow: 0 10px 30px rgba(17, 24, 39, 0.08);
+$bp-md: 860px;
+
+@mixin md-down {
+  @media (max-width: $bp-md) { @content; }
+}

@@ -1,0 +1,72 @@
+@use 'variables' as *;
+
+.auth {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+
+  @include md-down { grid-template-columns: 1fr; }
+
+  &__brand {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 16px;
+    padding: 64px;
+    color: $white;
+    background: linear-gradient(145deg, $primary 0%, #7c3aed 100%);
+
+    h2 { margin: 24px 0 0; font-size: 36px; line-height: 1.15; }
+    p { max-width: 420px; margin: 0; font-size: 17px; line-height: 1.6; opacity: 0.9; }
+
+    @include md-down { display: none; }
+  }
+
+  &__logo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 22px;
+    font-weight: 700;
+  }
+
+  &__logo-mark {
+    display: inline-grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    color: $primary;
+    background: $white;
+    border-radius: 8px;
+  }
+
+  &__panel {
+    display: grid;
+    place-items: center;
+    padding: 32px 20px;
+
+    @include md-down { background: $primary-soft; }
+  }
+
+  &__card {
+    width: 100%;
+    max-width: 420px;
+    padding: 36px;
+    background: $white;
+    border-radius: 16px;
+    box-shadow: $shadow;
+
+    h1 { margin: 0 0 6px; font-size: 26px; }
+
+    @include md-down { padding: 28px 22px; }
+  }
+
+  &__subtitle { margin: 0 0 24px; color: $text-muted; }
+
+  &__footer {
+    margin: 24px 0 0;
+    font-size: 14px;
+    text-align: center;
+    color: $text-muted;
+  }
+}
